@@ -27,10 +27,16 @@ def call_llm(prompt):
         return None
 
     payload = {
-        "model": "llama3-8b-8192",
+        "model": "llama-3.1-8b-instant",
         "messages": [
-            {"role": "system", "content": "You are a professional Bangalore real estate advisor. Use only provided data. Do not invent numbers."},
-            {"role": "user", "content": prompt}
+            {
+                "role": "system",
+                "content": "You are a professional Bangalore real estate advisor. Use only provided structured data. Do not invent numbers."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
         ],
         "temperature": 0.4,
         "max_tokens": 300
@@ -286,6 +292,7 @@ with tab4:
     ax4.barh(importance_df["Feature"], importance_df["Importance"])
     ax4.invert_yaxis()
     st.pyplot(fig4)
+
 
 
 

@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 HF_TOKEN = st.secrets.get("HF_TOKEN", None)
 
-API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-large"
+API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
 
 headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
@@ -27,22 +27,38 @@ def call_llm(prompt):
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 200,
+            "max_new_tokens": 150,
             "temperature": 0.3
         }
     }
 
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=20)
+        response = requests.post(
+            API_URL,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
 
         if response.status_code == 200:
             result = response.json()
+
+            # flan format
             if isinstance(result, list) and "generated_text" in result[0]:
                 return result[0]["generated_text"]
-        return None
+
+            return None
+
+        # Model still loading
+        elif response.status_code == 503:
+            return "Model is warming up. Please try again in a few seconds."
+
+        else:
+            return None
 
     except Exception:
         return None
+
 
 
 # --------------------------------
@@ -280,3 +296,4 @@ with tab4:
     ax4.barh(importance_df["Feature"], importance_df["Importance"])
     ax4.invert_yaxis()
     st.pyplot(fig4)
+

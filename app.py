@@ -14,7 +14,7 @@ warnings.filterwarnings("ignore")
 # --------------------------------
 
 HF_TOKEN = st.secrets.get("HF_TOKEN", None)
-
+st.write("Token loaded:", bool(HF_TOKEN))
 API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
 
 headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
@@ -296,4 +296,5 @@ with tab4:
     ax4.barh(importance_df["Feature"], importance_df["Importance"])
     ax4.invert_yaxis()
     st.pyplot(fig4)
+
 

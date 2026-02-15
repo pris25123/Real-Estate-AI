@@ -19,11 +19,11 @@ feature_columns = joblib.load("feature_columns.pkl")
 explainer = shap.TreeExplainer(model_rf)
 
 residual_std = 38.60
-Z_VALUE = 1.28  # 80% interval
+Z_VALUE = 1.28  # 80% confidence interval
 
 
 # --------------------------------
-# Helper Functions
+# ML Helper Functions
 # --------------------------------
 
 def prepare_input_df(location, bhk, sqft, bath=2, balcony=1):
@@ -48,12 +48,11 @@ def prepare_input_df(location, bhk, sqft, bath=2, balcony=1):
 
 
 def predict_price(location, bhk, sqft):
-    input_df = prepare_input_df(location, bhk, sqft)
-    log_pred = model_rf.predict(input_df)[0]
+    log_pred = model_rf.predict(prepare_input_df(location, bhk, sqft))[0]
     return np.exp(log_pred)
 
 
-def get_interval(price):
+def prediction_interval(price):
     error = Z_VALUE * residual_std
     return max(0, price - error), price + error
 
@@ -69,7 +68,7 @@ def explain_prediction(location, bhk, sqft):
         if f == "total_sqft":
             readable.append("Built-up area")
         elif f == "bhk":
-            readable.append("Number of bedrooms")
+            readable.append("Bedrooms")
         elif f == "bath":
             readable.append("Bathrooms")
         elif f.startswith("location_"):
@@ -77,137 +76,33 @@ def explain_prediction(location, bhk, sqft):
     return readable
 
 
-def detect_intent(query):
-    q = query.lower()
-
-    if "compare" in q:
-        return "compare"
-    if "average" in q or "avg" in q:
-        return "average"
-    if "estimate" in q or "how much" in q or "cost" in q or "price of" in q:
-        return "estimate"
-    if "cheapest" in q or "lowest" in q:
-        return "cheapest"
-    if "overpriced" in q or "reasonable" in q:
-        return "valuation"
-    return "search"
-
-
-def extract_location(query):
-    for loc in df["location"].unique():
-        if loc.lower() in query.lower():
-            return loc
-    return None
-
-
-def extract_bhk(query):
-    match = re.search(r'(\d+)\s*bhk', query.lower())
-    return int(match.group(1)) if match else None
-
-
-def extract_sqft(query):
-    match = re.search(r'(\d+)\s*sqft', query.lower())
-    return int(match.group(1)) if match else 1500
-
-
 # --------------------------------
-# Streamlit UI
+# UI Layout
 # --------------------------------
 
 st.set_page_config(page_title="Find Your Space AI", layout="wide")
 st.title("🏠 Find Your Space – Intelligent Real Estate Advisor")
 
-tab1, tab2, tab3 = st.tabs(["🤖 AI Assistant", "📊 Market Analytics", "🧠 Model Diagnostics"])
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["🤖 AI Assistant", "📊 Market Analytics", "🏗 Investment Studio", "🧠 Model Diagnostics"]
+)
 
 
-# --------------------------------
-# Sidebar Filters
-# --------------------------------
-
-st.sidebar.header("🔎 Manual Filters")
-
-selected_location = st.sidebar.selectbox("Location", sorted(df["location"].unique()))
-selected_bhk = st.sidebar.selectbox("BHK", sorted(df["bhk"].unique()))
-selected_budget = st.sidebar.slider("Max Budget (Lakhs)", 0, int(df["price"].max()), 100)
-
-
-# --------------------------------
-# TAB 1 – CONVERSATIONAL AI
-# --------------------------------
+# =================================
+# 🤖 TAB 1 – Conversational AI
+# =================================
 
 with tab1:
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    user_input = st.chat_input("Ask about listings, price estimates, comparisons...")
+    user_input = st.chat_input("Ask about listings, estimates, comparisons...")
 
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-        intent = detect_intent(user_input)
-        location = extract_location(user_input) or selected_location
-        bhk = extract_bhk(user_input) or selected_bhk
-        sqft = extract_sqft(user_input)
-
-        response = ""
-
-        if intent == "estimate":
-            price = predict_price(location, bhk, sqft)
-            lower, upper = get_interval(price)
-            factors = explain_prediction(location, bhk, sqft)
-
-            response = f"""
-💰 Estimated price for {bhk} BHK in {location} ({sqft} sqft):
-
-**₹ {round(price,2)} Lakhs**
-
-80% Range: ₹ {round(lower,2)} – {round(upper,2)} Lakhs
-
-Key Drivers:
-- {factors[0]}
-- {factors[1]}
-- {factors[2]}
-"""
-
-        elif intent == "average":
-            avg = df[df["location"] == location]["price"].mean()
-            response = f"📊 Average price in {location}: ₹ {round(avg,2)} Lakhs."
-
-        elif intent == "cheapest":
-            results = df[(df["location"] == location) & (df["bhk"] == bhk)]
-            results = results.sort_values("price").head(3)
-            response = "💸 Cheapest options:\n\n"
-            for _, r in results.iterrows():
-                response += f"- ₹ {r['price']} Lakhs ({int(r['total_sqft'])} sqft)\n"
-
-        elif intent == "compare":
-            avg_prices = df.groupby("location")["price"].mean()
-            locations = [l for l in df["location"].unique() if l.lower() in user_input.lower()]
-            if len(locations) >= 2:
-                response = "📊 Comparison:\n\n"
-                for l in locations[:2]:
-                    response += f"{l}: ₹ {round(avg_prices[l],2)} Lakhs average\n"
-            else:
-                response = "Please mention two locations to compare."
-
-        elif intent == "valuation":
-            price = predict_price(location, bhk, sqft)
-            response = f"Predicted fair value: ₹ {round(price,2)} Lakhs.\nIf market price is significantly higher, it may be overpriced."
-
-        else:
-            results = df[
-                (df["location"] == location) &
-                (df["bhk"] == bhk) &
-                (df["price"] <= selected_budget)
-            ].head(5)
-
-            if results.empty:
-                response = "No matching properties found."
-            else:
-                response = "🏘 Matching properties:\n\n"
-                for _, r in results.iterrows():
-                    response += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft\n"
+        response = "I can help with estimates, comparisons, and market insights."
 
         st.session_state.messages.append({"role": "assistant", "content": response})
 
@@ -216,9 +111,9 @@ Key Drivers:
             st.markdown(msg["content"])
 
 
-# --------------------------------
-# TAB 2 – MARKET ANALYTICS
-# --------------------------------
+# =================================
+# 📊 TAB 2 – Market Analytics
+# =================================
 
 with tab2:
 
@@ -237,11 +132,75 @@ with tab2:
     st.pyplot(fig2)
 
 
-# --------------------------------
-# TAB 3 – MODEL DIAGNOSTICS
-# --------------------------------
+# =================================
+# 🏗 TAB 3 – Investment Studio
+# =================================
 
 with tab3:
+
+    st.header("Investment & ROI Calculator")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        location = st.selectbox("Select Location", sorted(df["location"].unique()))
+        bhk = st.selectbox("Select BHK", sorted(df["bhk"].unique()))
+        sqft = st.number_input("Built-up Area (sqft)", value=1500)
+
+    with col2:
+        expected_rent = st.number_input("Expected Monthly Rent (₹)", value=30000)
+        holding_years = st.slider("Investment Horizon (Years)", 1, 20, 5)
+        annual_appreciation = st.slider("Expected Annual Appreciation (%)", 0, 15, 5)
+
+    if st.button("Calculate Investment Metrics"):
+
+        predicted_price = predict_price(location, bhk, sqft)
+        lower, upper = prediction_interval(predicted_price)
+
+        st.subheader("Predicted Property Value")
+        st.write(f"₹ {round(predicted_price,2)} Lakhs")
+        st.write(f"80% Range: ₹ {round(lower,2)} – {round(upper,2)} Lakhs")
+
+        # Rental Yield
+        annual_rent = expected_rent * 12
+        rental_yield = (annual_rent / (predicted_price * 100000)) * 100
+
+        st.subheader("Rental Yield")
+        st.write(f"{round(rental_yield,2)} % per year")
+
+        # ROI Projection
+        future_value = predicted_price * ((1 + annual_appreciation/100) ** holding_years)
+        total_return = future_value - predicted_price
+
+        st.subheader("Projected Capital Appreciation")
+        st.write(f"Future Value: ₹ {round(future_value,2)} Lakhs")
+        st.write(f"Total Gain: ₹ {round(total_return,2)} Lakhs")
+
+        # SHAP explanation
+        factors = explain_prediction(location, bhk, sqft)
+        st.subheader("Key Value Drivers")
+        for f in factors:
+            st.write(f"- {f}")
+
+    st.divider()
+
+    st.subheader("Location Price Heatmap")
+
+    heatmap_data = df.groupby("location")["price"].mean().reset_index()
+    heatmap_data = heatmap_data.sort_values("price", ascending=False).head(20)
+
+    fig3, ax3 = plt.subplots(figsize=(8,5))
+    ax3.barh(heatmap_data["location"], heatmap_data["price"])
+    ax3.invert_yaxis()
+    ax3.set_xlabel("Average Price (Lakhs)")
+    st.pyplot(fig3)
+
+
+# =================================
+# 🧠 TAB 4 – Model Diagnostics
+# =================================
+
+with tab4:
 
     st.markdown("""
     **Model:** Random Forest  
@@ -257,7 +216,7 @@ with tab3:
         "Importance": importances
     }).sort_values("Importance", ascending=False).head(10)
 
-    fig3, ax3 = plt.subplots()
-    ax3.barh(importance_df["Feature"], importance_df["Importance"])
-    ax3.invert_yaxis()
-    st.pyplot(fig3)
+    fig4, ax4 = plt.subplots()
+    ax4.barh(importance_df["Feature"], importance_df["Importance"])
+    ax4.invert_yaxis()
+    st.pyplot(fig4)

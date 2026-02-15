@@ -15,10 +15,16 @@ warnings.filterwarnings("ignore")
 
 HF_TOKEN = st.secrets.get("HF_TOKEN", None)
 st.write("Token loaded:", bool(HF_TOKEN))
-API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
+API_URL = "https://router.huggingface.co/hf-inference/models/google/flan-t5-base"
 
 headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
+
+API_URL = "https://router.huggingface.co/hf-inference/models/google/flan-t5-base"
+headers = {
+    "Authorization": f"Bearer {HF_TOKEN}",
+    "Content-Type": "application/json"
+}
 
 def call_llm(prompt):
     if not HF_TOKEN:
@@ -40,19 +46,16 @@ def call_llm(prompt):
             timeout=40
         )
 
-        # If successful
         if response.status_code == 200:
             result = response.json()
 
-            # flan format
             if isinstance(result, list) and "generated_text" in result[0]:
                 return result[0]["generated_text"]
 
-            return "⚠️ LLM returned unexpected format."
+            return "⚠️ Unexpected LLM response format."
 
-        # Model loading
         elif response.status_code == 503:
-            return "⏳ Model is warming up. Please try again in 10 seconds."
+            return "⏳ Model is warming up. Try again in a few seconds."
 
         else:
             return f"⚠️ LLM Error {response.status_code}: {response.text}"
@@ -297,6 +300,7 @@ with tab4:
     ax4.barh(importance_df["Feature"], importance_df["Importance"])
     ax4.invert_yaxis()
     st.pyplot(fig4)
+
 
 
 

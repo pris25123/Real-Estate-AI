@@ -6,8 +6,36 @@ import re
 import shap
 import warnings
 import matplotlib.pyplot as plt
+import requests
 
 warnings.filterwarnings("ignore")
+
+# --------------------------------
+# Secure HuggingFace Token
+# --------------------------------
+
+HF_TOKEN = st.secrets["HF_TOKEN"]
+
+API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
+headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+
+def call_llm(prompt):
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 200,
+            "temperature": 0.3
+        }
+    }
+
+    response = requests.post(API_URL, headers=headers, json=payload)
+
+    if response.status_code == 200:
+        return response.json()[0]["generated_text"]
+    else:
+        return "LLM service temporarily unavailable."
+
 
 # --------------------------------
 # Load Data & Models
@@ -19,7 +47,7 @@ feature_columns = joblib.load("feature_columns.pkl")
 explainer = shap.TreeExplainer(model_rf)
 
 residual_std = 38.60
-Z_VALUE = 1.28  # 80% confidence interval
+Z_VALUE = 1.28
 
 
 # --------------------------------
@@ -78,7 +106,7 @@ def explain_prediction(location, bhk, sqft):
 
 
 # --------------------------------
-# Conversational Logic
+# Conversational Intent Detection
 # --------------------------------
 
 def detect_intent(query):
@@ -124,8 +152,9 @@ tab1, tab2, tab3, tab4 = st.tabs(
     ["💬 Assistant", "📊 Market Analytics", "🏗 Investment Studio", "🧠 Model Diagnostics"]
 )
 
+
 # =================================
-# 💬 TAB 1 – Assistant
+# 💬 TAB 1 – Assistant (Hybrid AI)
 # =================================
 
 with tab1:
@@ -143,78 +172,54 @@ with tab1:
         bhk = extract_bhk(user_input)
         sqft = extract_sqft(user_input)
 
-        response = ""
+        structured_response = ""
 
-        # Cheapest
         if intent == "cheapest" and location:
             results = df[df["location"] == location]
             if bhk:
                 results = results[results["bhk"] == bhk]
             results = results.sort_values("price").head(3)
 
-            if results.empty:
-                response = "No matching properties found."
-            else:
-                response = "💸 Cheapest options:\n\n"
-                for _, r in results.iterrows():
-                    response += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
+            for _, r in results.iterrows():
+                structured_response += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
 
-        # Price range
         elif intent == "range" and location:
             loc_df = df[df["location"] == location]
-            response = f"📊 Price range in {location}: ₹ {loc_df['price'].min()} – {loc_df['price'].max()} Lakhs."
+            structured_response = f"Price range: ₹ {loc_df['price'].min()} – {loc_df['price'].max()} Lakhs"
 
-        # Average
         elif intent == "average" and location:
             avg = df[df["location"] == location]["price"].mean()
-            response = f"📊 Average price in {location}: ₹ {round(avg,2)} Lakhs."
+            structured_response = f"Average price: ₹ {round(avg,2)} Lakhs"
 
-        # Estimate
         elif intent == "estimate" and location and bhk:
             price = predict_price(location, bhk, sqft)
             lower, upper = prediction_interval(price)
-            factors = explain_prediction(location, bhk, sqft)
+            structured_response = f"Predicted: ₹ {round(price,2)} Lakhs (Range: ₹ {round(lower,2)} – {round(upper,2)})"
 
-            response = f"""
-💰 Estimated price for {bhk} BHK in {location} ({sqft} sqft):
+        elif location:
+            results = df[df["location"] == location].head(5)
+            for _, r in results.iterrows():
+                structured_response += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
+        else:
+            structured_response = "Please mention a valid location."
 
-₹ {round(price,2)} Lakhs  
-80% Range: ₹ {round(lower,2)} – {round(upper,2)} Lakhs  
+        # Send structured output to LLM
+        prompt = f"""
+You are a professional Bangalore real estate advisor.
 
-Key Drivers:
-- {factors[0]}
-- {factors[1]}
-- {factors[2]}
+User question:
+{user_input}
+
+Structured data from database:
+{structured_response}
+
+Explain clearly and professionally.
+Do not invent information.
 """
 
-        # Compare
-        elif intent == "compare":
-            mentioned = [loc for loc in df["location"].unique() if loc.lower() in user_input.lower()]
-            if len(mentioned) >= 2:
-                avg_prices = df.groupby("location")["price"].mean()
-                response = "📊 Comparison:\n\n"
-                for l in mentioned[:2]:
-                    response += f"{l}: ₹ {round(avg_prices[l],2)} Lakhs average\n"
-            else:
-                response = "Please mention two locations to compare."
+        final_response = call_llm(prompt)
 
-        # Search
-        elif location:
-            results = df[df["location"] == location]
-            if bhk:
-                results = results[results["bhk"] == bhk]
-            results = results.head(5)
-
-            if results.empty:
-                response = "No matching properties found."
-            else:
-                response = "🏘 Matching properties:\n\n"
-                for _, r in results.iterrows():
-                    response += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
-        else:
-            response = "Please mention a location."
-
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        st.session_state.messages.append({"role": "assistant", "content": final_response})
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -272,19 +277,6 @@ with tab3:
 
         future_value = predicted_price * ((1 + annual_appreciation/100) ** holding_years)
         st.write(f"Projected Value After {holding_years} Years: ₹ {round(future_value,2)} Lakhs")
-
-    st.divider()
-
-    st.subheader("Top 20 Locations by Average Price")
-
-    heatmap_data = df.groupby("location")["price"].mean().reset_index()
-    heatmap_data = heatmap_data.sort_values("price", ascending=False).head(20)
-
-    fig3, ax3 = plt.subplots(figsize=(8,5))
-    ax3.barh(heatmap_data["location"], heatmap_data["price"])
-    ax3.invert_yaxis()
-    ax3.set_xlabel("Average Price (Lakhs)")
-    st.pyplot(fig3)
 
 
 # =================================

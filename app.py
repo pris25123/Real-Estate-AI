@@ -10,58 +10,44 @@ import requests
 warnings.filterwarnings("ignore")
 
 # --------------------------------
-# Secure HuggingFace Token
+# Secure Groq API
 # --------------------------------
 
-HF_TOKEN = st.secrets.get("HF_TOKEN", None)
-st.write("Token loaded:", bool(HF_TOKEN))
-API_URL = "https://router.huggingface.co/hf-inference/models/HuggingFaceH4/zephyr-7b-beta"
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", None)
 
-headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-
-API_URL = "https://router.huggingface.co/hf-inference/models/google/flan-t5-base"
 headers = {
-    "Authorization": f"Bearer {HF_TOKEN}",
+    "Authorization": f"Bearer {GROQ_API_KEY}",
     "Content-Type": "application/json"
 }
 
 def call_llm(prompt):
-    if not HF_TOKEN:
+    if not GROQ_API_KEY:
         return None
 
     payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 150,
-            "temperature": 0.3
-        }
+        "model": "llama3-8b-8192",
+        "messages": [
+            {"role": "system", "content": "You are a professional Bangalore real estate advisor. Use only provided data. Do not invent numbers."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.4,
+        "max_tokens": 300
     }
 
     try:
-        response = requests.post(
-            API_URL,
-            headers=headers,
-            json=payload,
-            timeout=40
-        )
+        response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
 
         if response.status_code == 200:
             result = response.json()
-
-            if isinstance(result, list) and "generated_text" in result[0]:
-                return result[0]["generated_text"]
-
-            return "⚠️ Unexpected LLM response format."
-
-        elif response.status_code == 503:
-            return "⏳ Model is warming up. Try again in a few seconds."
+            return result["choices"][0]["message"]["content"]
 
         else:
-            return f"⚠️ LLM Error {response.status_code}: {response.text}"
+            return f"⚠️ Groq Error {response.status_code}: {response.text}"
 
     except Exception as e:
-        return f"⚠️ LLM Exception: {str(e)}"
+        return f"⚠️ Groq Exception: {str(e)}"
 
 
 
@@ -300,6 +286,7 @@ with tab4:
     ax4.barh(importance_df["Feature"], importance_df["Importance"])
     ax4.invert_yaxis()
     st.pyplot(fig4)
+
 
 
 

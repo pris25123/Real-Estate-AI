@@ -4,89 +4,35 @@ import numpy as np
 import joblib
 import re
 import shap
-import matplotlib.pyplot as plt
 import warnings
+import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
 
 # --------------------------------
-# Streamlit Page Setup
+# Load Data & Models
 # --------------------------------
 
-st.set_page_config(
-    page_title="Find Your Space AI",
-    page_icon="🏠",
-    layout="wide"
-)
+df = pd.read_csv("clean_bangalore_real_estate.csv")
+model_rf = joblib.load("price_model.pkl")
+feature_columns = joblib.load("feature_columns.pkl")
 
-st.title("🏠 Find Your Space – Intelligent Real Estate Advisor")
+explainer = shap.TreeExplainer(model_rf)
 
-# --------------------------------
-# CACHED LOADING (Performance Boost)
-# --------------------------------
+residual_std = 38.60   # Your residual std
+Z_VALUE = 1.28         # 80% confidence interval
 
-@st.cache_resource
-def load_model():
-    model = joblib.load("price_model.pkl")
-    features = joblib.load("feature_columns.pkl")
-    explainer_obj = shap.TreeExplainer(model)
-    return model, features, explainer_obj
-
-@st.cache_data
-def load_data():
-    return pd.read_csv("clean_bangalore_real_estate.csv")
-
-df = load_data()
-model_rf, feature_columns, explainer = load_model()
-
-residual_std = 38.60  # from training residuals
-
-# --------------------------------
-# Sidebar Filters (Professional UI)
-# --------------------------------
-
-st.sidebar.header("🔎 Manual Filters")
-
-selected_location = st.sidebar.selectbox(
-    "Select Location",
-    options=["Any"] + sorted(df["location"].unique().tolist())
-)
-
-selected_bhk = st.sidebar.selectbox(
-    "Select BHK",
-    options=["Any"] + sorted(df["bhk"].unique().tolist())
-)
-
-selected_budget = st.sidebar.slider(
-    "Max Budget (Lakhs)",
-    min_value=0,
-    max_value=int(df["price"].max()),
-    value=int(df["price"].max())
-)
 
 # --------------------------------
 # Helper Functions
 # --------------------------------
 
-def apply_sidebar_filters():
-    results = df.copy()
-
-    if selected_location != "Any":
-        results = results[results["location"] == selected_location]
-
-    if selected_bhk != "Any":
-        results = results[results["bhk"] == selected_bhk]
-
-    results = results[results["price"] <= selected_budget]
-
-    return results
-
 def prepare_input_df(location, bhk, sqft, bath=2, balcony=1):
     input_dict = {
-        "total_sqft": sqft,
-        "bath": bath,
-        "balcony": balcony,
-        "bhk": bhk
+        'total_sqft': sqft,
+        'bath': bath,
+        'balcony': balcony,
+        'bhk': bhk
     }
 
     for col in feature_columns:
@@ -101,117 +47,178 @@ def prepare_input_df(location, bhk, sqft, bath=2, balcony=1):
 
     return input_df[feature_columns]
 
+
 def predict_price(location, bhk, sqft):
     input_df = prepare_input_df(location, bhk, sqft)
     log_pred = model_rf.predict(input_df)[0]
-    return round(np.exp(log_pred), 2)
+    return np.exp(log_pred)
+
+
+def get_prediction_interval(predicted_price):
+    error_margin = Z_VALUE * residual_std
+    lower = max(0, predicted_price - error_margin)
+    upper = predicted_price + error_margin
+    return round(lower, 2), round(upper, 2)
+
 
 def explain_prediction(location, bhk, sqft):
     input_df = prepare_input_df(location, bhk, sqft)
     shap_values = explainer.shap_values(input_df, check_additivity=False)
+    shap_series = pd.Series(shap_values[0], index=feature_columns)
 
-    fig, ax = plt.subplots()
-    shap.summary_plot(shap_values, input_df, show=False)
-    st.pyplot(fig)
+    shap_series = shap_series.abs().sort_values(ascending=False).head(3)
+
+    explanations = []
+    for feature in shap_series.index:
+        if feature == "total_sqft":
+            text = "Built-up area"
+        elif feature == "bhk":
+            text = "Number of bedrooms"
+        elif feature == "bath":
+            text = "Bathrooms"
+        elif feature.startswith("location_"):
+            text = feature.replace("location_", "") + " location"
+        else:
+            text = feature
+        explanations.append(text)
+
+    return explanations
+
 
 # --------------------------------
-# Tabs Layout
+# Streamlit UI
 # --------------------------------
 
-tab1, tab2, tab3 = st.tabs(["💬 AI Assistant", "📊 Market Analytics", "🧠 Model Diagnostics"])
+st.set_page_config(page_title="Find Your Space AI", page_icon="🏠", layout="wide")
+
+st.title("🏠 Find Your Space – Intelligent Real Estate Advisor")
+
+tab1, tab2, tab3 = st.tabs(["🤖 AI Assistant", "📊 Market Analytics", "🧠 Model Diagnostics"])
+
 
 # --------------------------------
-# TAB 1 – AI Assistant
+# SIDEBAR FILTERS
+# --------------------------------
+
+st.sidebar.header("🔎 Manual Filters")
+
+selected_location = st.sidebar.selectbox(
+    "Location",
+    sorted(df["location"].unique())
+)
+
+selected_bhk = st.sidebar.selectbox(
+    "BHK",
+    sorted(df["bhk"].unique())
+)
+
+selected_budget = st.sidebar.slider(
+    "Max Budget (Lakhs)",
+    min_value=0,
+    max_value=int(df["price"].max()),
+    value=100
+)
+
+compare_mode = st.sidebar.checkbox("Enable Comparison Mode")
+
+
+# --------------------------------
+# TAB 1: AI ASSISTANT
 # --------------------------------
 
 with tab1:
 
-    query = st.text_input("Ask about listings, comparisons, or price estimates:")
+    st.subheader("Search Listings")
 
-    if st.button("Submit") and query:
+    filtered_df = df[
+        (df["location"] == selected_location) &
+        (df["bhk"] == selected_bhk) &
+        (df["price"] <= selected_budget)
+    ]
 
-        lower_query = query.lower()
+    if filtered_df.empty:
+        st.warning("No matching properties found.")
+    else:
+        st.success(f"{len(filtered_df)} matching properties found.")
 
-        if any(keyword in lower_query for keyword in [
-            "estimate", "how much", "price of", "cost of"
-        ]):
+        display_df = filtered_df.head(5)
+        st.dataframe(display_df[["location","bhk","total_sqft","bath","balcony","price"]])
 
-            location_match = next((loc for loc in df["location"].unique() if loc.lower() in lower_query), None)
-            bhk_match = re.search(r"(\d+)\s*bhk", lower_query)
-            sqft_match = re.search(r"(\d+)\s*sqft", lower_query)
+    st.divider()
 
-            if location_match and bhk_match:
-                bhk = int(bhk_match.group(1))
-                sqft = int(sqft_match.group(1)) if sqft_match else 1500
+    st.subheader("💰 Instant Price Estimator")
 
-                predicted_price = predict_price(location_match, bhk, sqft)
+    sqft_input = st.number_input("Enter Sqft", value=1500)
 
-                z_value = 1.28
-                error_margin = z_value * residual_std
+    if st.button("Predict Price"):
+        predicted_price = predict_price(selected_location, selected_bhk, sqft_input)
+        lower, upper = get_prediction_interval(predicted_price)
 
-                lower_bound = round(max(0, predicted_price - error_margin), 2)
-                upper_bound = round(predicted_price + error_margin, 2)
+        st.markdown(f"### Estimated Price: ₹ {round(predicted_price,2)} Lakhs")
+        st.markdown(f"80% Confidence Range: ₹ {lower} – {upper} Lakhs")
 
-                st.markdown(f"""
-                ### 💰 Estimated Price (80% Confidence)
-                **{lower_bound} – {upper_bound} Lakhs**
-                """)
+        explanations = explain_prediction(selected_location, selected_bhk, sqft_input)
 
-                st.markdown("### 🔍 SHAP Explanation")
-                explain_prediction(location_match, bhk, sqft)
+        st.markdown("#### Key Influencing Factors:")
+        for e in explanations:
+            st.write(f"- {e}")
 
-            else:
-                st.warning("Please specify location and BHK clearly.")
+        # Visualization
+        fig, ax = plt.subplots()
+        ax.bar(["Lower","Predicted","Upper"], [lower, predicted_price, upper])
+        ax.set_ylabel("Price (Lakhs)")
+        st.pyplot(fig)
 
-        else:
-            results = apply_sidebar_filters()
-
-            if results.empty:
-                st.warning("No matching properties found.")
-            else:
-                st.dataframe(results.head(10))
 
 # --------------------------------
-# TAB 2 – Market Analytics
+# TAB 2: MARKET ANALYTICS
 # --------------------------------
 
 with tab2:
 
-    st.subheader("📊 Average Price by Location")
+    st.subheader("Location Price Trends")
 
-    avg_price = df.groupby("location")["price"].mean().sort_values(ascending=False).head(10)
+    avg_price = df.groupby("location")["price"].mean().sort_values(ascending=False).head(15)
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(8,5))
     avg_price.plot(kind="bar", ax=ax)
     ax.set_ylabel("Average Price (Lakhs)")
+    ax.set_title("Top 15 Locations by Average Price")
     st.pyplot(fig)
 
-    st.subheader("📈 Price Distribution")
-
+    st.subheader("Price Distribution")
     fig2, ax2 = plt.subplots()
-    ax2.hist(df["price"], bins=30)
+    df["price"].hist(bins=50, ax=ax2)
     ax2.set_xlabel("Price (Lakhs)")
-    ax2.set_ylabel("Count")
+    ax2.set_ylabel("Frequency")
     st.pyplot(fig2)
 
+
 # --------------------------------
-# TAB 3 – Model Diagnostics
+# TAB 3: MODEL DIAGNOSTICS
 # --------------------------------
 
 with tab3:
 
-    st.subheader("🌲 Feature Importance")
+    st.subheader("Model Summary")
+
+    st.markdown("""
+    - Model: Random Forest Regressor  
+    - Target: Log(Price)  
+    - R² ≈ 0.77  
+    - Residual Std ≈ 38.6 Lakhs  
+    - 80% Prediction Interval used  
+    """)
+
+    st.subheader("Feature Importance")
 
     importances = model_rf.feature_importances_
-    feat_imp = pd.Series(importances, index=feature_columns).sort_values(ascending=False).head(10)
+    importance_df = pd.DataFrame({
+        "Feature": feature_columns,
+        "Importance": importances
+    }).sort_values("Importance", ascending=False).head(10)
 
     fig3, ax3 = plt.subplots()
-    feat_imp.plot(kind="barh", ax=ax3)
+    ax3.barh(importance_df["Feature"], importance_df["Importance"])
     ax3.invert_yaxis()
     st.pyplot(fig3)
-
-    st.subheader("📉 Residual Distribution")
-
-    preds_log = model_rf.predict(prepare_input_df(df.iloc[0]["location"], df.iloc[0]["bhk"], df.iloc[0]["total_sqft"]))
-    # simple placeholder since full residual set not saved
-    st.info("Residual STD used for interval: 38.60 Lakhs")

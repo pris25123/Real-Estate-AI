@@ -37,9 +37,10 @@ def call_llm(prompt):
             API_URL,
             headers=headers,
             json=payload,
-            timeout=30
+            timeout=40
         )
 
+        # If successful
         if response.status_code == 200:
             result = response.json()
 
@@ -47,17 +48,17 @@ def call_llm(prompt):
             if isinstance(result, list) and "generated_text" in result[0]:
                 return result[0]["generated_text"]
 
-            return None
+            return "⚠️ LLM returned unexpected format."
 
-        # Model still loading
+        # Model loading
         elif response.status_code == 503:
-            return "Model is warming up. Please try again in a few seconds."
+            return "⏳ Model is warming up. Please try again in 10 seconds."
 
         else:
-            return None
+            return f"⚠️ LLM Error {response.status_code}: {response.text}"
 
-    except Exception:
-        return None
+    except Exception as e:
+        return f"⚠️ LLM Exception: {str(e)}"
 
 
 
@@ -296,5 +297,6 @@ with tab4:
     ax4.barh(importance_df["Feature"], importance_df["Importance"])
     ax4.invert_yaxis()
     st.pyplot(fig4)
+
 
 

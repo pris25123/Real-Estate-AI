@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import joblib
 import re
-import shap
 import warnings
 import matplotlib.pyplot as plt
 import requests
@@ -16,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 HF_TOKEN = st.secrets["HF_TOKEN"]
 
-API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
+API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-large"
 headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 
@@ -29,12 +28,19 @@ def call_llm(prompt):
         }
     }
 
-    response = requests.post(API_URL, headers=headers, json=payload)
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=20)
 
-    if response.status_code == 200:
-        return response.json()[0]["generated_text"]
-    else:
-        return "LLM service temporarily unavailable."
+        if response.status_code == 200:
+            result = response.json()
+            if isinstance(result, list) and "generated_text" in result[0]:
+                return result[0]["generated_text"]
+            return "⚠️ LLM returned unexpected format."
+        else:
+            return None
+
+    except Exception:
+        return None
 
 
 # --------------------------------
@@ -44,7 +50,6 @@ def call_llm(prompt):
 df = pd.read_csv("clean_bangalore_real_estate.csv")
 model_rf = joblib.load("price_model.pkl")
 feature_columns = joblib.load("feature_columns.pkl")
-explainer = shap.TreeExplainer(model_rf)
 
 residual_std = 38.60
 Z_VALUE = 1.28
@@ -83,26 +88,6 @@ def predict_price(location, bhk, sqft):
 def prediction_interval(price):
     error = Z_VALUE * residual_std
     return max(0, price - error), price + error
-
-
-def explain_prediction(location, bhk, sqft):
-    input_df = prepare_input_df(location, bhk, sqft)
-    shap_values = explainer.shap_values(input_df, check_additivity=False)
-    shap_series = pd.Series(shap_values[0], index=feature_columns)
-    shap_series = shap_series.abs().sort_values(ascending=False).head(3)
-
-    readable = []
-    for f in shap_series.index:
-        if f == "total_sqft":
-            readable.append("Built-up area")
-        elif f == "bhk":
-            readable.append("Bedrooms")
-        elif f == "bath":
-            readable.append("Bathrooms")
-        elif f.startswith("location_"):
-            readable.append(f.replace("location_", "") + " location")
-
-    return readable
 
 
 # --------------------------------
@@ -154,7 +139,7 @@ tab1, tab2, tab3, tab4 = st.tabs(
 
 
 # =================================
-# 💬 TAB 1 – Assistant (Hybrid AI)
+# 💬 TAB 1 – Assistant
 # =================================
 
 with tab1:
@@ -185,39 +170,42 @@ with tab1:
 
         elif intent == "range" and location:
             loc_df = df[df["location"] == location]
-            structured_response = f"Price range: ₹ {loc_df['price'].min()} – {loc_df['price'].max()} Lakhs"
+            structured_response = f"Price range in {location}: ₹ {loc_df['price'].min()} – {loc_df['price'].max()} Lakhs"
 
         elif intent == "average" and location:
             avg = df[df["location"] == location]["price"].mean()
-            structured_response = f"Average price: ₹ {round(avg,2)} Lakhs"
+            structured_response = f"Average price in {location}: ₹ {round(avg,2)} Lakhs"
 
         elif intent == "estimate" and location and bhk:
             price = predict_price(location, bhk, sqft)
             lower, upper = prediction_interval(price)
-            structured_response = f"Predicted: ₹ {round(price,2)} Lakhs (Range: ₹ {round(lower,2)} – {round(upper,2)})"
+            structured_response = f"Estimated price: ₹ {round(price,2)} Lakhs (80% Range: ₹ {round(lower,2)} – {round(upper,2)})"
 
         elif location:
             results = df[df["location"] == location].head(5)
             for _, r in results.iterrows():
                 structured_response += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
-        else:
-            structured_response = "Please mention a valid location."
 
-        # Send structured output to LLM
+        else:
+            structured_response = "Please mention a valid Bangalore location."
+
         prompt = f"""
 You are a professional Bangalore real estate advisor.
 
 User question:
 {user_input}
 
-Structured data from database:
+Verified database results:
 {structured_response}
 
 Explain clearly and professionally.
-Do not invent information.
+Do NOT invent information.
+If structured data is empty, say no data available.
 """
 
-        final_response = call_llm(prompt)
+        llm_response = call_llm(prompt)
+
+        final_response = llm_response if llm_response else structured_response
 
         st.session_state.messages.append({"role": "assistant", "content": final_response})
 

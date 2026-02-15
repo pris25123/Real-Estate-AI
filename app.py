@@ -13,13 +13,17 @@ warnings.filterwarnings("ignore")
 # Secure HuggingFace Token
 # --------------------------------
 
-HF_TOKEN = st.secrets["HF_TOKEN"]
+HF_TOKEN = st.secrets.get("HF_TOKEN", None)
 
 API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-large"
-headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+
+headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
 
 def call_llm(prompt):
+    if not HF_TOKEN:
+        return None
+
     payload = {
         "inputs": prompt,
         "parameters": {
@@ -35,9 +39,7 @@ def call_llm(prompt):
             result = response.json()
             if isinstance(result, list) and "generated_text" in result[0]:
                 return result[0]["generated_text"]
-            return "⚠️ LLM returned unexpected format."
-        else:
-            return None
+        return None
 
     except Exception:
         return None
@@ -91,39 +93,58 @@ def prediction_interval(price):
 
 
 # --------------------------------
-# Conversational Intent Detection
+# Data Retrieval Logic
 # --------------------------------
 
-def detect_intent(query):
-    q = query.lower()
-    if "cheapest" in q or "lowest" in q:
-        return "cheapest"
-    if "range" in q:
-        return "range"
-    if "average" in q:
-        return "average"
-    if "compare" in q:
-        return "compare"
-    if "estimate" in q or "cost" in q or "price of" in q or "how much" in q:
-        return "estimate"
-    return "search"
+def get_structured_data(query):
+    query_lower = query.lower()
+    structured = ""
 
+    locations_found = [loc for loc in df["location"].unique()
+                       if loc.lower() in query_lower]
 
-def extract_location(query):
-    for loc in df["location"].unique():
-        if loc.lower() in query.lower():
-            return loc
-    return None
+    bhk_match = re.search(r'(\d+)\s*bhk', query_lower)
+    bhk = int(bhk_match.group(1)) if bhk_match else None
 
+    sqft_match = re.search(r'(\d+)\s*sqft', query_lower)
+    sqft = int(sqft_match.group(1)) if sqft_match else 1500
 
-def extract_bhk(query):
-    match = re.search(r'(\d+)\s*bhk', query.lower())
-    return int(match.group(1)) if match else None
+    if "cheapest" in query_lower and locations_found:
+        loc = locations_found[0]
+        results = df[df["location"] == loc]
+        if bhk:
+            results = results[results["bhk"] == bhk]
+        results = results.sort_values("price").head(3)
 
+        for _, r in results.iterrows():
+            structured += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
 
-def extract_sqft(query):
-    match = re.search(r'(\d+)\s*sqft', query.lower())
-    return int(match.group(1)) if match else 1500
+    elif "range" in query_lower and locations_found:
+        loc = locations_found[0]
+        loc_df = df[df["location"] == loc]
+        structured = f"Price range in {loc}: ₹ {loc_df['price'].min()} – {loc_df['price'].max()} Lakhs"
+
+    elif "average" in query_lower and locations_found:
+        loc = locations_found[0]
+        avg = df[df["location"] == loc]["price"].mean()
+        structured = f"Average price in {loc}: ₹ {round(avg,2)} Lakhs"
+
+    elif ("estimate" in query_lower or "how much" in query_lower) and locations_found and bhk:
+        loc = locations_found[0]
+        price = predict_price(loc, bhk, sqft)
+        lower, upper = prediction_interval(price)
+        structured = f"Estimated value for {bhk} BHK in {loc} ({sqft} sqft): ₹ {round(price,2)} Lakhs (Range: ₹ {round(lower,2)} – {round(upper,2)})"
+
+    elif locations_found:
+        loc = locations_found[0]
+        results = df[df["location"] == loc].head(5)
+        for _, r in results.iterrows():
+            structured += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
+
+    else:
+        structured = "No structured data available for this query."
+
+    return structured
 
 
 # --------------------------------
@@ -139,7 +160,7 @@ tab1, tab2, tab3, tab4 = st.tabs(
 
 
 # =================================
-# 💬 TAB 1 – Assistant
+# 💬 Assistant (LLM Reasoning Layer)
 # =================================
 
 with tab1:
@@ -147,47 +168,12 @@ with tab1:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    user_input = st.chat_input("Ask about listings, estimates, comparisons...")
+    user_input = st.chat_input("Ask about listings, investment advice, comparisons...")
 
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-        intent = detect_intent(user_input)
-        location = extract_location(user_input)
-        bhk = extract_bhk(user_input)
-        sqft = extract_sqft(user_input)
-
-        structured_response = ""
-
-        if intent == "cheapest" and location:
-            results = df[df["location"] == location]
-            if bhk:
-                results = results[results["bhk"] == bhk]
-            results = results.sort_values("price").head(3)
-
-            for _, r in results.iterrows():
-                structured_response += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
-
-        elif intent == "range" and location:
-            loc_df = df[df["location"] == location]
-            structured_response = f"Price range in {location}: ₹ {loc_df['price'].min()} – {loc_df['price'].max()} Lakhs"
-
-        elif intent == "average" and location:
-            avg = df[df["location"] == location]["price"].mean()
-            structured_response = f"Average price in {location}: ₹ {round(avg,2)} Lakhs"
-
-        elif intent == "estimate" and location and bhk:
-            price = predict_price(location, bhk, sqft)
-            lower, upper = prediction_interval(price)
-            structured_response = f"Estimated price: ₹ {round(price,2)} Lakhs (80% Range: ₹ {round(lower,2)} – {round(upper,2)})"
-
-        elif location:
-            results = df[df["location"] == location].head(5)
-            for _, r in results.iterrows():
-                structured_response += f"- ₹ {r['price']} Lakhs | {int(r['total_sqft'])} sqft | {r['bhk']} BHK\n"
-
-        else:
-            structured_response = "Please mention a valid Bangalore location."
+        structured_data = get_structured_data(user_input)
 
         prompt = f"""
 You are a professional Bangalore real estate advisor.
@@ -195,17 +181,20 @@ You are a professional Bangalore real estate advisor.
 User question:
 {user_input}
 
-Verified database results:
-{structured_response}
+Verified structured data from database:
+{structured_data}
 
-Explain clearly and professionally.
-Do NOT invent information.
-If structured data is empty, say no data available.
+Rules:
+- Use ONLY the structured data provided.
+- Do NOT invent numbers.
+- If no data available, clearly say so.
+- Provide advisory reasoning where appropriate.
+- Be concise but insightful.
 """
 
         llm_response = call_llm(prompt)
 
-        final_response = llm_response if llm_response else structured_response
+        final_response = llm_response if llm_response else structured_data
 
         st.session_state.messages.append({"role": "assistant", "content": final_response})
 
@@ -215,7 +204,7 @@ If structured data is empty, say no data available.
 
 
 # =================================
-# 📊 TAB 2 – Market Analytics
+# 📊 Market Analytics
 # =================================
 
 with tab2:
@@ -237,7 +226,7 @@ with tab2:
 
 
 # =================================
-# 🏗 TAB 3 – Investment Studio
+# 🏗 Investment Studio
 # =================================
 
 with tab3:
@@ -268,7 +257,7 @@ with tab3:
 
 
 # =================================
-# 🧠 TAB 4 – Model Diagnostics
+# 🧠 Model Diagnostics
 # =================================
 
 with tab4:
